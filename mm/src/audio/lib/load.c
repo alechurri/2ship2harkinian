@@ -2297,6 +2297,12 @@ void AudioLoad_ScriptLoad(s32 tableType, s32 id, s8* isDone) {
 
     sScriptLoadDonePointers[sLoadIndex] = isDone;
     AudioLoad_AsyncLoad(tableType, id, 0, sLoadIndex, &sScriptLoadQueue);
+#ifdef __PS4__
+    {
+        void AudioSfx_Ps4CheckUnchanged(const char* where);
+        AudioSfx_Ps4CheckUnchanged("AudioLoad_ScriptLoad");
+    }
+#endif
     sLoadIndex++;
     if (sLoadIndex == 0x10) {
         sLoadIndex = 0;

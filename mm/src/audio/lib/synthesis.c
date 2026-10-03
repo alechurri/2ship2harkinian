@@ -216,6 +216,10 @@ void AudioSynth_SyncSampleStates(s32 updateIndex) {
     }
 }
 
+#ifdef __PS4__
+void AudioSfx_Ps4CheckUnchanged(const char* where);
+#endif
+
 Acmd* AudioSynth_Update(Acmd* abiCmdStart, s32* numAbiCmds, s16* aiBufStart, s32 numSamplesPerFrame) {
     s32 numSamplesPerUpdate;
     s16* curAiBufPos;
@@ -227,7 +231,13 @@ Acmd* AudioSynth_Update(Acmd* abiCmdStart, s32* numAbiCmds, s16* aiBufStart, s32
     for (reverseUpdateIndex = gAudioCtx.audioBufferParameters.updatesPerFrame; reverseUpdateIndex > 0;
          reverseUpdateIndex--) {
         AudioScript_ProcessSequences(reverseUpdateIndex - 1);
+#ifdef __PS4__
+        AudioSfx_Ps4CheckUnchanged("AudioScript_ProcessSequences");
+#endif
         AudioSynth_SyncSampleStates(gAudioCtx.audioBufferParameters.updatesPerFrame - reverseUpdateIndex);
+#ifdef __PS4__
+        AudioSfx_Ps4CheckUnchanged("AudioSynth_SyncSampleStates");
+#endif
     }
 
     curAiBufPos = aiBufStart;

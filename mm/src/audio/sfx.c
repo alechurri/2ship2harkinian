@@ -67,6 +67,120 @@ u8 sSfxBankSizes[ARRAY_COUNT(gSfxBanks)] = {
     ARRAY_COUNT(sSfxVoiceBank),
 };
 
+#ifdef __PS4__
+// 2S2H [PS4] On PS4 the sfx bank lists were found with EMPTY entries still linked in, which made
+// the list walks below loop forever. Two tools:
+//  - every walk is capped: a broken list gets rebuilt (all sfx stopped) instead of hanging the game;
+//  - the banks belong to the game thread, so the audio thread must never change them: it takes a
+//    snapshot when it starts a frame and checks it after each stage, logging what changed where.
+#include <stdio.h>
+#define PS4_SFX_MAX_WALK 256
+
+static s32 sPs4SfxRepairs = 0;
+static u8 sPs4SfxShadow[9 + 12 + 32 + 20 + 8 + 3 + 5][sizeof(SfxBankEntry)];
+static u8 sPs4SfxShadowHeads[2][ARRAY_COUNT(gSfxBanks)];
+static s32 sPs4SfxShadowValid = false;
+static s32 sPs4SfxDiffReports = 0;
+
+void AudioSfx_Ps4RepairBanks(const char* where) {
+    u8 bankId;
+    u8 i;
+
+    if (sPs4SfxRepairs < 8) {
+        printf("[PS4] SFX LIST BROKEN in %s: rebuilding the sfx banks\n", where);
+        fflush(stdout);
+    }
+    sPs4SfxRepairs++;
+    for (i = 0; i < 16; i++) {
+        AUDIOCMD_CHANNEL_SET_IO(SEQ_PLAYER_SFX, i, 0, 0);
+    }
+    for (bankId = 0; bankId < ARRAY_COUNT(gSfxBanks); bankId++) {
+        sSfxBankListEnd[bankId] = 0;
+        sSfxBankFreeListStart[bankId] = 1;
+        for (i = 0; i < MAX_CHANNELS_PER_BANK; i++) {
+            gActiveSfx[bankId][i].entryIndex = 0xFF;
+        }
+        gSfxBanks[bankId][0].prev = 0xFF;
+        gSfxBanks[bankId][0].next = 0xFF;
+        for (i = 1; i < sSfxBankSizes[bankId] - 1; i++) {
+            gSfxBanks[bankId][i].prev = i - 1;
+            gSfxBanks[bankId][i].next = i + 1;
+            gSfxBanks[bankId][i].state = SFX_STATE_EMPTY;
+        }
+        gSfxBanks[bankId][i].prev = i - 1;
+        gSfxBanks[bankId][i].next = 0xFF;
+        gSfxBanks[bankId][i].state = SFX_STATE_EMPTY;
+    }
+}
+
+void AudioSfx_Ps4Snapshot(void) {
+    u8 bankId;
+    s32 row = 0;
+
+    for (bankId = 0; bankId < ARRAY_COUNT(gSfxBanks); bankId++) {
+        memcpy(sPs4SfxShadow[row], gSfxBanks[bankId], sSfxBankSizes[bankId] * sizeof(SfxBankEntry));
+        row += sSfxBankSizes[bankId];
+    }
+    memcpy(sPs4SfxShadowHeads[0], sSfxBankListEnd, sizeof(sSfxBankListEnd));
+    memcpy(sPs4SfxShadowHeads[1], sSfxBankFreeListStart, sizeof(sSfxBankFreeListStart));
+    sPs4SfxShadowValid = true;
+}
+
+void AudioSfx_Ps4CheckUnchanged(const char* where) {
+    u8 bankId;
+    s32 row = 0;
+    s32 i;
+    s32 j;
+    s32 changed = false;
+
+    if (!sPs4SfxShadowValid) {
+        return;
+    }
+    for (bankId = 0; bankId < ARRAY_COUNT(gSfxBanks); bankId++) {
+        for (i = 0; i < sSfxBankSizes[bankId]; i++, row++) {
+            const u8* now = (const u8*)&gSfxBanks[bankId][i];
+            if (memcmp(now, sPs4SfxShadow[row], sizeof(SfxBankEntry)) == 0) {
+                continue;
+            }
+            changed = true;
+            if (sPs4SfxDiffReports < 24) {
+                sPs4SfxDiffReports++;
+                printf("[PS4] SFX BANK WRITTEN BY THE AUDIO THREAD (%s, audio frame %u): bank %d entry %d (%p):", where,
+                       (u32)gAudioCtx.totalTaskCount, bankId, i, (const void*)now);
+                for (j = 0; j < (s32)sizeof(SfxBankEntry); j++) {
+                    if (now[j] != sPs4SfxShadow[row][j]) {
+                        printf(" +%02X:%02X>%02X", j, sPs4SfxShadow[row][j], now[j]);
+                    }
+                }
+                printf("\n");
+            }
+        }
+    }
+    if (memcmp(sPs4SfxShadowHeads[0], sSfxBankListEnd, sizeof(sSfxBankListEnd)) != 0 ||
+        memcmp(sPs4SfxShadowHeads[1], sSfxBankFreeListStart, sizeof(sSfxBankFreeListStart)) != 0) {
+        changed = true;
+        if (sPs4SfxDiffReports < 24) {
+            sPs4SfxDiffReports++;
+            printf("[PS4] SFX LIST HEADS WRITTEN BY THE AUDIO THREAD (%s)\n", where);
+        }
+    }
+    if (changed) {
+        fflush(stdout);
+        AudioSfx_Ps4Snapshot();
+    }
+}
+
+#define PS4_SFX_WALK_INIT() s32 ps4WalkCount = 0
+#define PS4_SFX_WALK_STEP(where)                     \
+    if (++ps4WalkCount > PS4_SFX_MAX_WALK) {         \
+        AudioSfx_Ps4RepairBanks(where);              \
+        break;                                       \
+    }
+#else
+#define PS4_SFX_WALK_INIT() (void)0
+#define PS4_SFX_WALK_STEP(where)
+#endif
+
 u8 gSfxChannelLayout = 0;
 u16 sSfxChannelLowVolumeFlag = 0;
 
@@ -236,7 +350,9 @@ void AudioSfx_ProcessRequest(void) {
     index = gSfxBanks[bankId][0].next;
 
     // Compare the sfx request to all sfx bank entries
+    PS4_SFX_WALK_INIT();
     while ((index != 0xFF) && (index != 0)) {
+        PS4_SFX_WALK_STEP("AudioSfx_ProcessRequest");
 
         // If an existing sfx from the same source exists in the bank, then we should either:
         // renew if it is the same sfx, check if any sfx channels are available for that bank,
@@ -413,7 +529,9 @@ void AudioSfx_ChooseActiveSfx(u8 bankId) {
     k = 0;
 
     // Delete stale sfx and prioritize remaining sfx into the gActiveSfx arrays
+    PS4_SFX_WALK_INIT();
     while (entryIndex != 0xFF) {
+        PS4_SFX_WALK_STEP("AudioSfx_ChooseActiveSfx");
 
         // Update the freshness for an "all-frame" sfx if it is still queued
         if ((gSfxBanks[bankId][entryIndex].state == SFX_STATE_QUEUED) &&
@@ -705,7 +823,9 @@ void AudioSfx_StopByBank(u8 bankId) {
     SfxBankEntry entryToRemove;
     u8 entryIndex = gSfxBanks[bankId][0].next;
 
+    PS4_SFX_WALK_INIT();
     while (entryIndex != 0xFF) {
+        PS4_SFX_WALK_STEP("AudioSfx_StopByBank");
         entry = &gSfxBanks[bankId][entryIndex];
         if (entry->state >= SFX_STATE_PLAYING_REFRESH) {
             AUDIOCMD_CHANNEL_SET_IO(SEQ_PLAYER_SFX, entry->channelIndex, 0, 0);
@@ -726,7 +846,9 @@ void AudioSfx_StopByPosAndBankImpl(u8 bankId, Vec3f* pos) {
     u8 entryIndex = gSfxBanks[bankId][0].next;
     u8 prevEntryIndex = 0;
 
+    PS4_SFX_WALK_INIT();
     while (entryIndex != 0xFF) {
+        PS4_SFX_WALK_STEP("AudioSfx_StopByPosAndBankImpl");
         entry = &gSfxBanks[bankId][entryIndex];
         if (entry->posX == &pos->x) {
             if (entry->state >= SFX_STATE_PLAYING_REFRESH) {
@@ -771,7 +893,9 @@ void AudioSfx_StopByPosAndId(Vec3f* pos, u16 sfxId) {
     u8 prevEntryIndex = 0;
     SfxBankEntry entryToRemove;
 
+    PS4_SFX_WALK_INIT();
     while (entryIndex != 0xFF) {
+        PS4_SFX_WALK_STEP("AudioSfx_StopByPosAndId");
         entry = &gSfxBanks[SFX_BANK(sfxId)][entryIndex];
         if ((entry->posX == &pos->x) && (entry->sfxId == sfxId)) {
             if (entry->state >= SFX_STATE_PLAYING_REFRESH) {
@@ -802,7 +926,9 @@ void AudioSfx_StopByTokenAndId(u8 token, u16 sfxId) {
     u8 prevEntryIndex = 0;
     SfxBankEntry entryToRemove;
 
+    PS4_SFX_WALK_INIT();
     while (entryIndex != 0xFF) {
+        PS4_SFX_WALK_STEP("AudioSfx_StopByTokenAndId");
         entry = &gSfxBanks[SFX_BANK(sfxId)][entryIndex];
         if ((entry->token == token) && (entry->sfxId == sfxId)) {
             if (entry->state >= SFX_STATE_PLAYING_REFRESH) {
@@ -832,7 +958,9 @@ void AudioSfx_StopById(u32 sfxId) {
     u8 prevEntryIndex = 0;
     SfxBankEntry entryToRemove;
 
+    PS4_SFX_WALK_INIT();
     while (entryIndex != 0xFF) {
+        PS4_SFX_WALK_STEP("AudioSfx_StopById");
         entry = &gSfxBanks[SFX_BANK(sfxId)][entryIndex];
         if (entry->sfxId == sfxId) {
             if (entry->state >= SFX_STATE_PLAYING_REFRESH) {
@@ -904,7 +1032,9 @@ u8 AudioSfx_IsPlaying(u32 sfxId) {
     SfxBankEntry* entry;
     u8 entryIndex = gSfxBanks[SFX_BANK(sfxId)][0].next;
 
+    PS4_SFX_WALK_INIT();
     while (entryIndex != 0xFF) {
+        PS4_SFX_WALK_STEP("AudioSfx_IsPlaying");
         entry = &gSfxBanks[SFX_BANK(sfxId)][entryIndex];
         if (entry->sfxId == sfxId) {
             return true;

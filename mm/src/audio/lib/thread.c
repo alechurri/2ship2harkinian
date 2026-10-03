@@ -19,7 +19,13 @@ s32 AudioThread_ScheduleProcessCmds(void);
 
 #ifdef __PS4__
 void AudioLoad_Ps4CheckScriptLoads(const char* where);
-#define PS4_CHECK_SCRIPT_LOADS(where) AudioLoad_Ps4CheckScriptLoads(where)
+void AudioSfx_Ps4Snapshot(void);
+void AudioSfx_Ps4CheckUnchanged(const char* where);
+#define PS4_CHECK_SCRIPT_LOADS(where)       \
+    do {                                    \
+        AudioLoad_Ps4CheckScriptLoads(where); \
+        AudioSfx_Ps4CheckUnchanged(where);  \
+    } while (0)
 #else
 #define PS4_CHECK_SCRIPT_LOADS(where)
 #endif
@@ -47,12 +53,16 @@ void AudioMgr_CreateNextAudioBuffer(s16* samples, u32 num_samples) {
 
     gAudioCtx.totalTaskCount++;
 
+#ifdef __PS4__
+    AudioSfx_Ps4Snapshot();
+#endif
     PS4_CHECK_SCRIPT_LOADS("audio frame start");
     AudioLoad_DecreaseSampleDmaTtls();
     PS4_CHECK_SCRIPT_LOADS("after DecreaseSampleDmaTtls");
     AudioLoad_ProcessLoads(gAudioCtx.resetStatus);
     PS4_CHECK_SCRIPT_LOADS("after ProcessLoads");
     AudioLoad_ProcessScriptLoads();
+    PS4_CHECK_SCRIPT_LOADS("after ProcessScriptLoads");
 
     if (gAudioCtx.resetStatus != 0) {
         if (AudioHeap_ResetStep() == 0) {
@@ -68,6 +78,7 @@ void AudioMgr_CreateNextAudioBuffer(s16* samples, u32 num_samples) {
         // msg = 0000RREE R = read pos, E = End Pos
         while (osRecvMesg(gAudioCtx.threadCmdProcQueueP, &sp4C, OS_MESG_NOBLOCK) != -1) {
             AudioThread_ProcessCmds(sp4C.data32);
+            PS4_CHECK_SCRIPT_LOADS("AudioThread_ProcessCmds");
             j++;
         }
         if ((j == 0) && (gAudioCtx.threadCmdQueueFinished)) {

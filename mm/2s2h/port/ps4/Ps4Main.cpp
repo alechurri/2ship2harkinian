@@ -288,7 +288,8 @@ void CheckFileSizes() {
 
 void* GameThread(void*) {
     uintptr_t top = 0;
-    sGameStackTop = (uintptr_t)&top + 256;
+    // Not past this frame: the page above the top of the stack is not mapped.
+    sGameStackTop = (uintptr_t)&top;
     BootLogRaw("[PS4] game thread started\n");
     static char arg0[] = "2ship";
     char* argv[] = { arg0, nullptr };
