@@ -487,11 +487,14 @@ void AudioThread_ProcessCmds(u32 msg) {
 
 u32 AudioThread_GetExternalLoadQueueMsg(u32* retMsg) {
     u32 msg;
+    // 2S2H [Port] Receive into a whole OSMesg, it is wider than msg
+    OSMesg mesg;
 
-    if (osRecvMesg(&gAudioCtx.externalLoadQueue, (OSMesg*)&msg, OS_MESG_NOBLOCK) == -1) {
+    if (osRecvMesg(&gAudioCtx.externalLoadQueue, &mesg, OS_MESG_NOBLOCK) == -1) {
         *retMsg = 0;
         return 0;
     }
+    msg = mesg.data32;
 
     *retMsg = msg & 0xFFFFFF;
     return msg >> 0x18;
@@ -522,7 +525,7 @@ s32 func_80193C5C(void) {
 void AudioThread_WaitForAudioResetQueueP(void) {
     // macro?
     // clang-format off
-    s32 chk = -1; s32 msg; do {} while (osRecvMesg(gAudioCtx.audioResetQueueP, (OSMesg*)&msg, OS_MESG_NOBLOCK) != chk);
+    s32 chk = -1; OSMesg msg; do {} while (osRecvMesg(gAudioCtx.audioResetQueueP, &msg, OS_MESG_NOBLOCK) != chk);
     // clang-format on
 }
 

@@ -1937,17 +1937,20 @@ s32 AudioLoad_ProcessSamplePreloads(s32 resetStatus) {
     s32 pad;
 
     if (gAudioCtx.preloadSampleStackTop > 0) {
+        // 2S2H [Port] Receive into a whole OSMesg, it is wider than preloadIndex
+        OSMesg preloadMsg;
         if (resetStatus != 0) {
             // Clear result queue and preload stack and return.
-            osRecvMesg(&gAudioCtx.preloadSampleQueue, (OSMesg*)&preloadIndex, OS_MESG_NOBLOCK);
+            osRecvMesg(&gAudioCtx.preloadSampleQueue, &preloadMsg, OS_MESG_NOBLOCK);
             gAudioCtx.preloadSampleStackTop = 0;
             return false;
         }
-        if (osRecvMesg(&gAudioCtx.preloadSampleQueue, (OSMesg*)&preloadIndex, OS_MESG_NOBLOCK) == -1) {
+        if (osRecvMesg(&gAudioCtx.preloadSampleQueue, &preloadMsg, OS_MESG_NOBLOCK) == -1) {
             // Previous preload is not done yet.
             return false;
         }
 
+        preloadIndex = preloadMsg.data32;
         preloadIndex >>= 24;
         preload = &gAudioCtx.preloadSampleStack[preloadIndex];
 
@@ -2250,7 +2253,11 @@ void AudioLoad_ProcessScriptLoads(void) {
     u32 sp20;
     s8* isDone;
 
-    if (osRecvMesg(&sScriptLoadQueue, (OSMesg*)&sp20, OS_MESG_NOBLOCK) != -1) {
+    // 2S2H [Port] Receive into a whole OSMesg, it is wider than sp20
+    OSMesg msg;
+
+    if (osRecvMesg(&sScriptLoadQueue, &msg, OS_MESG_NOBLOCK) != -1) {
+        sp20 = msg.data32;
         temp = sp20 >> 24;
         isDone = sScriptLoadDonePointers[temp];
         if (isDone != NULL) {
