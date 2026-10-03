@@ -16,6 +16,7 @@
 #include <orbis/libkernel.h>
 
 #include <spdlog/spdlog.h>
+#include <ship/port/ps4/Ps4Platform.h>
 
 #include <exception>
 #include <stdexcept>
@@ -25,6 +26,7 @@ extern "C" int ship_main(int argc, char* argv[]);
 // Not declared by the OpenOrbis headers.
 extern "C" int sceKernelInstallExceptionHandler(int signalNumber, void (*handler)(int, void*));
 extern "C" int sceKernelRemoveExceptionHandler(int signalNumber);
+extern "C" int sceKernelRaiseException(pthread_t thread, int signalNumber);
 // From the OpenOrbis linker script.
 extern "C" char __text_start;
 extern "C" char __eh_frame_start;
@@ -66,6 +68,8 @@ constexpr int kRipOffset = kMcontextOffset + 160;
 constexpr int kRspOffset = kMcontextOffset + 184;
 constexpr int kRbpOffset = kMcontextOffset + 72;
 constexpr int kAddrOffset = kMcontextOffset + 136;
+// SIGUSR1 in kernel numbering: what sceKernelRaiseException() delivers to another thread.
+constexpr int kHangDumpSignal = 30;
 
 uintptr_t CodeOffset(uintptr_t address) {
     const uintptr_t start = (uintptr_t)&__text_start;
@@ -90,6 +94,7 @@ void LogStackCodeAddresses(const uintptr_t* from, const char* what) {
 }
 
 void KernelExceptionHandler(int signalNumber, void* context) {
+    const bool hangDump = signalNumber == kHangDumpSignal;
     char line[256];
     const uint8_t* ctx = static_cast<const uint8_t*>(context);
     uintptr_t rip = 0;
@@ -103,9 +108,9 @@ void KernelExceptionHandler(int signalNumber, void* context) {
         memcpy(&addr, ctx + kAddrOffset, sizeof(addr));
     }
     snprintf(line, sizeof(line),
-             "[PS4] FATAL: exception %d at rip %p (code offset %lx), fault address %p, rsp %p, rbp %p, text "
+             "[PS4] %s: exception %d at rip %p (code offset %lx), fault address %p, rsp %p, rbp %p, text "
              "start %p\n",
-             signalNumber, (void*)rip, (unsigned long)CodeOffset(rip), (void*)addr, (void*)rsp, (void*)rbp,
+             hangDump ? "HANG" : "FATAL", signalNumber, (void*)rip, (unsigned long)CodeOffset(rip), (void*)addr, (void*)rsp, (void*)rbp,
              (void*)&__text_start);
     BootLogRaw(line);
     // Only trust rsp if it points near the stack we are running on (same thread), so a wrong
@@ -117,9 +122,49 @@ void KernelExceptionHandler(int signalNumber, void* context) {
     }
     uintptr_t here = 0;
     LogStackCodeAddresses(&here, "handler");
+    if (hangDump) {
+        // Interrupted on purpose by the watchdog: carry on where the thread was.
+        BootLogRaw("[PS4] end of hang report\n");
+        return;
+    }
     BootLogRaw("[PS4] end of crash report\n");
     // Let the fault happen again without us, so the system ends the process as usual.
     sceKernelRemoveExceptionHandler(signalNumber);
+}
+
+// If no frame gets presented for a while, interrupt the game thread so the exception handler
+// logs where it is stuck. A few reports, spaced out, tell a tight loop from a blocked wait.
+pthread_t sGameThread;
+
+void* HangWatchdog(void*) {
+    uint64_t lastCount = 0;
+    int stalledSeconds = 0;
+    int reports = 0;
+    while (reports < 3) {
+        sleep(1);
+        const uint64_t count = Ship::Ps4::GetSwapCount();
+        if (count == 0 || count != lastCount) {
+            lastCount = count;
+            stalledSeconds = 0;
+            continue;
+        }
+        stalledSeconds++;
+        if (stalledSeconds == 6 || stalledSeconds == 12 || stalledSeconds == 20) {
+            char line[160];
+            snprintf(line, sizeof(line), "[PS4] HANG: no frame presented for %d s (frame %llu, %s)\n",
+                     stalledSeconds, (unsigned long long)count,
+                     Ship::Ps4::IsSwapInProgress() ? "inside eglSwapBuffers" : "not swapping");
+            BootLogRaw(line);
+            Ship::Ps4::LogMemoryStats("during the hang");
+            const int result = sceKernelRaiseException(sGameThread, kHangDumpSignal);
+            if (result < 0) {
+                snprintf(line, sizeof(line), "[PS4] sceKernelRaiseException failed: 0x%08X\n", (unsigned int)result);
+                BootLogRaw(line);
+            }
+            reports++;
+        }
+    }
+    return nullptr;
 }
 
 void TerminateHandler() {
@@ -178,7 +223,7 @@ void InstallBootLog() {
     }
     // Kernel (FreeBSD) signal numbers, not the musl/Linux ones from <signal.h>:
     // SIGILL, SIGTRAP, SIGABRT, SIGFPE, SIGBUS, SIGSEGV, SIGSYS.
-    for (int signalNumber : { 4, 5, 6, 8, 10, 11, 12 }) {
+    for (int signalNumber : { 4, 8, 10, 11, kHangDumpSignal }) {
         const int result = sceKernelInstallExceptionHandler(signalNumber, KernelExceptionHandler);
         if (result < 0) {
             char line[96];
@@ -255,6 +300,13 @@ int main(int argc, char* argv[]) {
     pthread_t thread;
     const int result = pthread_create(&thread, &attributes, GameThread, nullptr);
     pthread_attr_destroy(&attributes);
+    if (result == 0) {
+        sGameThread = thread;
+        pthread_t watchdog;
+        if (pthread_create(&watchdog, nullptr, HangWatchdog, nullptr) == 0) {
+            pthread_detach(watchdog);
+        }
+    }
 
     if (result != 0) {
         printf("[PS4] could not create the game thread (%d), running on the main thread\n", result);
