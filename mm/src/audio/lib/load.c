@@ -2237,8 +2237,63 @@ void AudioLoad_Unused4(void) {
 void AudioLoad_Unused5(void) {
 }
 
+#ifdef __PS4__
+// 2S2H [PS4] On PS4 the script load queue was found corrupted (messages pending, no buffer) and the
+// game crashed on the next receive. Check it at every stage of the audio frame: the first time it
+// breaks, log where, with a dump of the surrounding globals, then repair it instead of crashing.
+static s32 sPs4ScriptLoadReports = 0;
+
+static void AudioLoad_Ps4DumpScriptLoads(const char* where, u32 loadIndex) {
+    const u8* start = (const u8*)seqCachePolicyMap;
+    const u8* end = (const u8*)sScriptLoadMesgBuf + sizeof(sScriptLoadMesgBuf);
+    const u8* p;
+    s32 i;
+
+    if (sPs4ScriptLoadReports >= 4) {
+        return;
+    }
+    sPs4ScriptLoadReports++;
+    printf("[PS4] AUDIO CORRUPTION at %s (audio frame %u, load index %u): queue valid %d first %d count %d msg %p, "
+           "buffer %p\n",
+           where, (u32)gAudioCtx.totalTaskCount, loadIndex, (s32)sScriptLoadQueue.validCount,
+           (s32)sScriptLoadQueue.first, (s32)sScriptLoadQueue.msgCount, (void*)sScriptLoadQueue.msg,
+           (void*)sScriptLoadMesgBuf);
+    for (p = start; p < end; p += 16) {
+        printf("[PS4]   %p:", (const void*)p);
+        for (i = 0; i < 16 && p + i < end; i++) {
+            printf(" %02X", p[i]);
+        }
+        printf("\n");
+    }
+    fflush(stdout);
+}
+
+void AudioLoad_Ps4CheckScriptLoads(const char* where) {
+    OSMesgQueue* queue = &sScriptLoadQueue;
+
+    if (queue->msg == NULL && queue->msgCount == 0 && queue->validCount == 0) {
+        // Not created yet: the audio heap is still being set up.
+        return;
+    }
+    if (queue->msg == sScriptLoadMesgBuf && queue->msgCount == ARRAY_COUNT(sScriptLoadMesgBuf) &&
+        queue->first >= 0 && queue->first < queue->msgCount && queue->validCount >= 0 &&
+        queue->validCount <= queue->msgCount) {
+        return;
+    }
+    AudioLoad_Ps4DumpScriptLoads(where, 0xFFFFFFFF);
+    osCreateMesgQueue(queue, sScriptLoadMesgBuf, ARRAY_COUNT(sScriptLoadMesgBuf));
+}
+#endif
+
 void AudioLoad_ScriptLoad(s32 tableType, s32 id, s8* isDone) {
     static u32 sLoadIndex = 0;
+
+#ifdef __PS4__
+    if (sLoadIndex >= ARRAY_COUNT(sScriptLoadDonePointers)) {
+        AudioLoad_Ps4DumpScriptLoads("script load index", sLoadIndex);
+        sLoadIndex = 0;
+    }
+#endif
 
     sScriptLoadDonePointers[sLoadIndex] = isDone;
     AudioLoad_AsyncLoad(tableType, id, 0, sLoadIndex, &sScriptLoadQueue);
@@ -2256,12 +2311,19 @@ void AudioLoad_ProcessScriptLoads(void) {
     // 2S2H [Port] Receive into a whole OSMesg, it is wider than sp20
     OSMesg msg;
 
+#ifdef __PS4__
+    AudioLoad_Ps4CheckScriptLoads("ProcessScriptLoads");
+#endif
     if (osRecvMesg(&sScriptLoadQueue, &msg, OS_MESG_NOBLOCK) != -1) {
         sp20 = msg.data32;
         temp = sp20 >> 24;
-        isDone = sScriptLoadDonePointers[temp];
-        if (isDone != NULL) {
-            *isDone = false;
+        // 2S2H [Port] A failed load reports 0xFFFFFFFF: index 0xFF is far outside the array, and the
+        // original code would write a zero byte through whatever pointer it found there.
+        if (temp < ARRAY_COUNT(sScriptLoadDonePointers)) {
+            isDone = sScriptLoadDonePointers[temp];
+            if (isDone != NULL) {
+                *isDone = false;
+            }
         }
     }
 }

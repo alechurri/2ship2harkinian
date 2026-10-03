@@ -17,6 +17,13 @@ s32 AudioThread_GetSamplePos(s32 seqPlayerIndex, s32 channelIndex, s32 layerInde
 s32 AudioThread_CountAndReleaseNotes(s32 flags);
 s32 AudioThread_ScheduleProcessCmds(void);
 
+#ifdef __PS4__
+void AudioLoad_Ps4CheckScriptLoads(const char* where);
+#define PS4_CHECK_SCRIPT_LOADS(where) AudioLoad_Ps4CheckScriptLoads(where)
+#else
+#define PS4_CHECK_SCRIPT_LOADS(where)
+#endif
+
 AudioTask* AudioThread_Update(void) {
     return AudioThread_UpdateImpl();
 }
@@ -40,8 +47,11 @@ void AudioMgr_CreateNextAudioBuffer(s16* samples, u32 num_samples) {
 
     gAudioCtx.totalTaskCount++;
 
+    PS4_CHECK_SCRIPT_LOADS("audio frame start");
     AudioLoad_DecreaseSampleDmaTtls();
+    PS4_CHECK_SCRIPT_LOADS("after DecreaseSampleDmaTtls");
     AudioLoad_ProcessLoads(gAudioCtx.resetStatus);
+    PS4_CHECK_SCRIPT_LOADS("after ProcessLoads");
     AudioLoad_ProcessScriptLoads();
 
     if (gAudioCtx.resetStatus != 0) {
@@ -50,6 +60,7 @@ void AudioMgr_CreateNextAudioBuffer(s16* samples, u32 num_samples) {
                 osSendMesg8(gAudioCtx.audioResetQueueP, gAudioCtx.specId, OS_MESG_NOBLOCK);
             }
         }
+        PS4_CHECK_SCRIPT_LOADS("after heap reset step");
     }
 
     int j = 0;
@@ -62,9 +73,11 @@ void AudioMgr_CreateNextAudioBuffer(s16* samples, u32 num_samples) {
         if ((j == 0) && (gAudioCtx.threadCmdQueueFinished)) {
             AudioThread_ScheduleProcessCmds();
         }
+        PS4_CHECK_SCRIPT_LOADS("after audio commands");
     }
     s32 writtenCmds;
     AudioSynth_Update(gAudioCtx.curAbiCmdBuf, &writtenCmds, samples, num_samples);
+    PS4_CHECK_SCRIPT_LOADS("after synthesis");
     gAudioCtx.audioRandom = (gAudioCtx.audioRandom + gAudioCtx.totalTaskCount) * osGetCount();
 }
 

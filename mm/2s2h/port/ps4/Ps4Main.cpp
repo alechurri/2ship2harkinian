@@ -122,25 +122,31 @@ void KernelExceptionHandler(int signalNumber, void* context) {
              hangDump ? "HANG" : "FATAL", signalNumber, (void*)rip, (unsigned long)CodeOffset(rip), (void*)addr, (void*)rsp, (void*)rbp,
              (void*)&__text_start);
     BootLogRaw(line);
-    // Walk the frame pointer chain, staying inside the game thread's stack.
+    // Walk the frame pointer chain. On the game thread the top of the stack is known; on other
+    // threads (audio...) only follow frames that keep going up in small steps from rsp.
     const bool onGameStack = sGameStackTop != 0 && rsp != 0 && rsp < sGameStackTop &&
                              sGameStackTop - rsp < kGameThreadStackSize && (rsp & 7) == 0;
-    if (onGameStack) {
+    const uintptr_t self = (uintptr_t)&rip;
+    const bool onThisStack = rsp != 0 && (rsp & 7) == 0 && rsp > self && rsp - self < 0x10000;
+    if (onGameStack || onThisStack) {
+        const uintptr_t top = onGameStack ? sGameStackTop : rsp + 0x200000;
         BootLogRaw("[PS4] call chain (offsets):");
         uintptr_t frame = rbp;
         for (int depth = 0; depth < 64; depth++) {
-            if (frame < rsp || frame + 16 > sGameStackTop || (frame & 7) != 0) {
+            if (frame < rsp || frame + 16 > top || (frame & 7) != 0) {
                 break;
             }
             const uintptr_t* slots = reinterpret_cast<const uintptr_t*>(frame);
             snprintf(line, sizeof(line), " %lx", (unsigned long)CodeOffset(slots[1]));
             BootLogRaw(line);
-            if (slots[0] <= frame) {
+            if (slots[0] <= frame || slots[0] - frame > 0x20000) {
                 break;
             }
             frame = slots[0];
         }
         BootLogRaw("\n");
+    }
+    if (onGameStack) {
         LogStackCodeAddresses(reinterpret_cast<const uintptr_t*>(rsp), "faulting");
     } else {
         uintptr_t here = 0;
