@@ -917,13 +917,24 @@ void OTRAudio_Thread() {
         u32 num_audio_samples = samples_left < AudioPlayer_GetDesiredBuffered() ? SAMPLES_HIGH : SAMPLES_LOW;
 
         // 3 is the maximum authentic frame divisor.
-        s16 audio_buffer[SAMPLES_HIGH * NUM_AUDIO_CHANNELS * 3];
+        s16 audio_buffer[SAMPLES_HIGH * NUM_AUDIO_CHANNELS * 4];
+        int audio_updates = AUDIO_FRAMES_PER_UPDATE;
+#ifdef __PS4__
+        // 2S2H [PS4] Audio is made once per game frame, so a game running a little under full speed
+        // made less audio than the output plays and the queue ran dry (silent gaps). The N64 ran
+        // its audio on its own clock: follow the queue instead, one update more or less.
+        if (samples_left < AudioPlayer_GetDesiredBuffered() / 2) {
+            audio_updates++;
+        } else if (samples_left > AudioPlayer_GetDesiredBuffered() * 3 && audio_updates > 1) {
+            audio_updates--;
+        }
+#endif
 #ifdef __PS4__
         // 2S2H [PS4] The game thread waits for this every frame: log how long it takes and how full
         // the output queue was, to tell slow synthesis from a starved output.
         const auto ps4SynthStart = std::chrono::steady_clock::now();
 #endif
-        for (int i = 0; i < AUDIO_FRAMES_PER_UPDATE; i++) {
+        for (int i = 0; i < audio_updates; i++) {
             AudioMgr_CreateNextAudioBuffer(audio_buffer + i * (num_audio_samples * NUM_AUDIO_CHANNELS),
                                            num_audio_samples);
         }
@@ -954,7 +965,7 @@ void OTRAudio_Thread() {
 #endif
 
         AudioPlayer_Play((u8*)audio_buffer,
-                         num_audio_samples * (sizeof(int16_t) * NUM_AUDIO_CHANNELS * AUDIO_FRAMES_PER_UPDATE));
+                         num_audio_samples * (sizeof(int16_t) * NUM_AUDIO_CHANNELS * audio_updates));
 
         audio.processing = false;
         audio.cv_from_thread.notify_one();
