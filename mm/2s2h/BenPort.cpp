@@ -917,14 +917,19 @@ void OTRAudio_Thread() {
         u32 num_audio_samples = samples_left < AudioPlayer_GetDesiredBuffered() ? SAMPLES_HIGH : SAMPLES_LOW;
 
         // 3 is the maximum authentic frame divisor.
-        s16 audio_buffer[SAMPLES_HIGH * NUM_AUDIO_CHANNELS * 4];
+        s16 audio_buffer[SAMPLES_HIGH * NUM_AUDIO_CHANNELS * 6];
         int audio_updates = AUDIO_FRAMES_PER_UPDATE;
 #ifdef __PS4__
         // 2S2H [PS4] Audio is made once per game frame, so a game running a little under full speed
         // made less audio than the output plays and the queue ran dry (silent gaps). The N64 ran
-        // its audio on its own clock: follow the queue instead, one update more or less.
-        if (samples_left < AudioPlayer_GetDesiredBuffered() / 2) {
-            audio_updates++;
+        // its audio on its own clock: follow the queue instead.
+        if (samples_left < AudioPlayer_GetDesiredBuffered()) {
+            // As many extra updates as it takes to get back to the desired level (at most 6 in all).
+            audio_updates += (AudioPlayer_GetDesiredBuffered() - samples_left + (int)num_audio_samples - 1) /
+                             (int)num_audio_samples;
+            if (audio_updates > 6) {
+                audio_updates = 6;
+            }
         } else if (samples_left > AudioPlayer_GetDesiredBuffered() * 3 && audio_updates > 1) {
             audio_updates--;
         }
