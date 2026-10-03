@@ -372,7 +372,7 @@ void BenMenu::AddSettings() {
         .CVar("gSettings.Menu.BackgroundOpacity")
         .Options(FloatSliderOptions().DefaultValue(0.85f).IsPercentage().Tooltip(
             "Sets the opacity of the background of the port menu."));
-#if not defined(__SWITCH__) and not defined(__WIIU__)
+#if not defined(__SWITCH__) and not defined(__WIIU__) and not defined(__PS4__)
     AddWidget(path, "Menu Controller Navigation", WIDGET_CVAR_CHECKBOX)
         .CVar(CVAR_IMGUI_CONTROLLER_NAV)
         .Options(CheckboxOptions().Tooltip(

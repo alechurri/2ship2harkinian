@@ -168,7 +168,7 @@ target_compile_definitions(libultraship PUBLIC INCLUDE_MPQ_SUPPORT)
 
 # LUS ships no PCH of its own and these headers dominate its build. Done here rather than in the
 # submodule, and PRIVATE, so nothing about its public interface changes.
-if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU|MSVC")
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU|MSVC" AND NOT CMAKE_SYSTEM_NAME STREQUAL "PS4")
     target_precompile_headers(libultraship PRIVATE
         "$<$<COMPILE_LANGUAGE:CXX>:<ship/Context.h$<ANGLE-R>>"
         "$<$<COMPILE_LANGUAGE:CXX>:<ship/resource/ResourceManager.h$<ANGLE-R>>"
@@ -184,6 +184,11 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU|MSVC")
     endif()
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "PS4")
+    # Assets are extracted on a PC; the console build has no extractor and no packaging rules.
+    add_subdirectory(mm)
+    return()
+endif()
 add_subdirectory(ZAPDTR/ZAPD ${CMAKE_BINARY_DIR}/ZAPD)
 add_subdirectory(OTRExporter)
 add_subdirectory(mm)

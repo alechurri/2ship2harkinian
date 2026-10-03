@@ -49,7 +49,10 @@ size_t gSystemHeapSize = 0;
 
 void InitOTR(int argc, char* argv[]);
 void Heaps_Free(void);
-#ifdef __GNUC__
+#if defined(__PS4__)
+// The process entry point is in 2s2h/port/ps4/Ps4Main.cpp, it runs this on a thread with a big stack.
+#define SDL_main ship_main
+#elif defined(__GNUC__)
 #define SDL_main main
 #endif
 

@@ -77,6 +77,13 @@ UIWidgets::Colors GetMenuThemeColor() {
 
 void SetupMenu() {
     auto gui = Ship::Context::GetRawInstance()->GetWindow()->GetGui();
+#ifdef __PS4__
+    // The game is closed from the system menu, often with the port menu still open, and its
+    // open/closed state is saved: don't greet the player with it at the next start.
+    CVarSetInteger("gWindows.Menu", 0);
+    // The DualShock is the only input device: the menu is always navigated with it.
+    CVarSetInteger(CVAR_IMGUI_CONTROLLER_NAV, 1);
+#endif
     mBenMenu = std::make_shared<BenMenu>("gWindows.Menu", "Settings Menu");
     gui->SetMenu(mBenMenu);
 

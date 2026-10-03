@@ -38,6 +38,10 @@
 #include <SDL2/SDL_scancode.h>
 #endif
 #include "Extractor/Extract.h"
+#ifdef __PS4__
+#include <SDL2/SDL.h>
+#include <ship/port/ps4/Ps4Platform.h>
+#endif
 // OTRTODO
 // #include <functions.h>
 #include "2s2h/Enhancements/FrameInterpolation/FrameInterpolation.h"
@@ -272,6 +276,78 @@ namespace BenGui {
 extern std::shared_ptr<BenGui::BenMenu> mBenMenu;
 }
 
+#ifdef __PS4__
+// Console build: there is no ROM extractor here. The archives are generated with the PC release
+// of the same version and copied to the data directory, so all that is left to do at boot is to
+// check that they are there and tell the player what to do when they aren't.
+void OTRGlobals::RunExtract(int argc, char* argv[]) {
+    auto wnd = std::dynamic_pointer_cast<Fast::Fast3dWindow>(OTRGlobals::Instance->context->GetWindow());
+    auto gui = wnd->GetGui();
+
+    const bool outdatedRomArchive = VerifyArchiveVersion(DetectArchiveVersion("mm.o2r", true));
+    const bool haveRomArchive = std::filesystem::exists(Ship::Context::LocateFileAcrossAppDirs("mm.o2r", appShortName));
+    const std::string dataPath = Ship::Context::GetAppDirectoryPath(appShortName);
+    const std::string buildVersion = fmt::format("{}.{}.{}", gBuildVersionMajor, gBuildVersionMinor, gBuildVersionPatch);
+
+    std::string title;
+    std::string message;
+    if (!shipArchiveVersionMatch) {
+        title = !std::filesystem::exists(portArchivePath) ? "Missing 2ship.o2r" : "2ship.o2r is outdated";
+        message = "This build needs the 2ship.o2r of 2 Ship 2 Harkinian " + buildVersion + ".\nCopy it to " +
+                  dataPath + "/ and start the game again.";
+    } else if (outdatedRomArchive) {
+        title = "Outdated ROM Archive";
+        message = "The mm.o2r in " + dataPath +
+                  "/ was created with an incompatible version of 2 Ship 2 Harkinian.\nGenerate it again with the " +
+                  buildVersion + " PC release and copy it over.";
+    } else if (!haveRomArchive) {
+        title = "No ROM Archive";
+        message = "No mm.o2r found.\nGenerate one from your ROM with the 2 Ship 2 Harkinian " + buildVersion +
+                  " PC release and copy it to " + dataPath + "/";
+    } else {
+        CheckAndCreateModFolder();
+        return;
+    }
+
+    SPDLOG_ERROR("{}: {}", title, message);
+    message += "\n\nPress OPTIONS to exit.";
+    BenGui::RegisterPopup(title, message, "OK", "", [&]() { exit(1); });
+
+    // InitControlDeck already attached the pad; open it here to read OPTIONS directly.
+    SDL_GameController* controller = nullptr;
+    for (int i = 0; i < SDL_NumJoysticks() && controller == nullptr; i++) {
+        if (SDL_IsGameController(i)) {
+            controller = SDL_GameControllerOpen(i);
+        }
+    }
+
+    while (true) {
+        if (!WindowIsRunning()) {
+            exit(0);
+        }
+        // Process window events (also updates the controllers)
+        wnd->HandleEvents();
+        if (controller != nullptr && SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_START)) {
+            exit(1);
+        }
+
+        if (!wnd->IsFrameReady()) {
+            continue;
+        }
+
+        UIWidgets::Colors themeColor =
+            static_cast<UIWidgets::Colors>(CVarGetInteger("gSettings.Menu.Theme", UIWidgets::Colors::LightBlue));
+        ImGui::PushStyleColor(ImGuiCol_TitleBgActive, UIWidgets::ColorValues.at(themeColor));
+        ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, UIWidgets::ColorValues.at(UIWidgets::Colors::DarkGray));
+        gui->StartDraw();
+        benFast3dWindow->StartFrame();
+        benFast3dWindow->RunGuiOnly();
+        gui->EndDraw();
+        benFast3dWindow->EndFrame();
+        ImGui::PopStyleColor(2);
+    }
+}
+#else
 void OTRGlobals::RunExtract(int argc, char* argv[]) {
     bool extractDone = false;
     ExtractSteps extractStep = ES_PORT_ARCHIVE;
@@ -608,6 +684,7 @@ void OTRGlobals::RunExtract(int argc, char* argv[]) {
     Ship::WiiU::Init(appShortName);
 #endif
 }
+#endif // __PS4__
 
 void OTRGlobals::Initialize() {
     std::string mmPath = Ship::Context::LocateFileAcrossAppDirs("mm.o2r", appShortName);
@@ -725,7 +802,7 @@ void OTRGlobals::Initialize() {
     auto versions = context->GetResourceManager()->GetArchiveManager()->GetGameVersions();
     for (uint32_t version : versions) {
         if (!validHashes.contains(version)) {
-#if defined(__SWITCH__)
+#if defined(__SWITCH__) || defined(__PS4__)
             SPDLOG_ERROR("Invalid O2R File!");
 #elif defined(__WIIU__)
             Ship::WiiU::ThrowInvalidOTR();
@@ -952,7 +1029,12 @@ ArchiveVersion DetectArchiveVersion(std::string fileName, bool isO2rType) {
 }
 
 extern "C" void Messagebox_ShowErrorBox(char* title, char* body) {
+#ifdef __PS4__
+    // No native message boxes without the extractor module, the log has to do.
+    SPDLOG_ERROR("{}: {}", title, body);
+#else
     Extractor::ShowErrorBox(title, body);
+#endif
 }
 
 bool VerifyArchiveVersion(ArchiveVersion version) {

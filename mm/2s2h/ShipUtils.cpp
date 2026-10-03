@@ -1,6 +1,7 @@
 #include "ShipUtils.h"
 #include "assets/2s2h_assets.h"
 #include <string>
+#include <sstream>
 #include <bit>
 #include <random>
 #include <vector>

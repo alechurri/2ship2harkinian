@@ -739,7 +739,7 @@ void Menu::DrawElement() {
     options2.tooltip = "Reset"
 #ifdef __APPLE__
                        " (Command-R)"
-#elif !defined(__SWITCH__) && !defined(__WIIU__)
+#elif !defined(__SWITCH__) && !defined(__WIIU__) && !defined(__PS4__)
                        " (Ctrl+R)"
 #else
                        ""
