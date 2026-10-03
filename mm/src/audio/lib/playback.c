@@ -196,7 +196,9 @@ void AudioPlayback_ProcessNotes(void) {
         sampleState = &gAudioCtx.sampleStateList[gAudioCtx.sampleStateOffset + i];
         playbackState = &note->playbackState;
         if (playbackState->parentLayer != NO_LAYER) {
-#ifndef __WIIU__
+// 2S2H [PS4] The executable (and gAudioCtx, where the sequence layers live) is loaded below 2 GiB on PS4,
+// so this check skipped every note there: no volume, pitch or sample state updates.
+#if !defined(__WIIU__) && !defined(__PS4__)
             // OTRTODO: This skips playback if the pointer is below where memory on the N64 normally would be.
             // This does not translate well to modern platforms and how they map memory.
             // Considering that this check is not present in OoT/SoH, we may be able to remove this altogether.
