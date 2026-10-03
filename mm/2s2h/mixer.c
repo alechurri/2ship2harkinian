@@ -71,7 +71,8 @@ static struct {
 
 #ifdef __PS4__
 extern char __text_start;
-static uint8_t sPs4DmemScratch[0x10000 + 0x400] __attribute__((aligned(16)));
+#define PS4_DMEM_SCRATCH_SIZE 0x24000
+static uint8_t sPs4DmemScratch[PS4_DMEM_SCRATCH_SIZE] __attribute__((aligned(16)));
 static int sPs4DmemReports = 0;
 
 static uint8_t* Ps4DmemPtr(uint32_t addr, const char* function, void* caller, void* callerOfCaller) {
@@ -96,6 +97,25 @@ static uint8_t* Ps4DmemPtr(uint32_t addr, const char* function, void* caller, vo
     }
     return sPs4DmemScratch;
 }
+
+// Sizes given as int can come out of the synthesis negative or huge: keep them inside whatever
+// Ps4DmemPtr hands out for that address.
+static int Ps4DmemSize(uint32_t addr, int nbytes) {
+    int room;
+
+    if (nbytes <= 0) {
+        return 0;
+    }
+    if (addr >= 0x0330 && addr < 0x0330 + DMEM_BUF_SIZE) {
+        room = (int)(0x0330 + DMEM_BUF_SIZE - addr);
+    } else {
+        room = PS4_DMEM_SCRATCH_SIZE;
+    }
+    return nbytes < room ? nbytes : room;
+}
+#define PS4_DMEM_SIZE(addr, nbytes) Ps4DmemSize((addr), (nbytes))
+#else
+#define PS4_DMEM_SIZE(addr, nbytes) (nbytes)
 #endif
 
 static int16_t resample_table[64][4] = {
@@ -146,6 +166,7 @@ static inline int32_t clamp32(int64_t v) {
 
 void aClearBufferImpl(uint16_t addr, int nbytes) {
     nbytes = ROUND_UP_16(nbytes);
+    nbytes = PS4_DMEM_SIZE(addr, nbytes);
     memset(BUF_U8(addr), 0, nbytes);
 }
 
@@ -155,7 +176,7 @@ void aLoadBufferImpl(const void* source_addr, uint16_t dest_addr, uint16_t nbyte
         BUF_U8(dest_addr)[i] = ((const unsigned char*)source_addr)[i];
     }
 #else
-    memcpy(BUF_U8(dest_addr), source_addr, ROUND_DOWN_16(nbytes));
+    memcpy(BUF_U8(dest_addr), source_addr, PS4_DMEM_SIZE(dest_addr, ROUND_DOWN_16(nbytes)));
 #endif
 }
 
@@ -190,7 +211,7 @@ void aSaveBufferImpl(uint16_t source_addr, int16_t* dest_addr, uint16_t nbytes) 
     if (PS4_BAD_AUDIO_DEST(dest_addr, ROUND_DOWN_16(nbytes), "aSaveBuffer")) {
         return;
     }
-    memcpy(dest_addr, BUF_S16(source_addr), ROUND_DOWN_16(nbytes));
+    memcpy(dest_addr, BUF_S16(source_addr), PS4_DMEM_SIZE(source_addr, ROUND_DOWN_16(nbytes)));
 }
 
 void aLoadADPCMImpl(int num_entries_times_16, const int16_t* book_source_addr) {
@@ -231,6 +252,8 @@ void aInterleaveImpl(uint16_t dest, uint16_t left, uint16_t right, uint16_t c) {
 
 void aDMEMMoveImpl(uint16_t in_addr, uint16_t out_addr, int nbytes) {
     nbytes = ROUND_UP_16(nbytes);
+    nbytes = PS4_DMEM_SIZE(out_addr, nbytes);
+    nbytes = PS4_DMEM_SIZE(in_addr, nbytes);
     memmove(BUF_U8(out_addr), BUF_U8(in_addr), nbytes);
 }
 

@@ -915,10 +915,37 @@ void OTRAudio_Thread() {
 
         // 3 is the maximum authentic frame divisor.
         s16 audio_buffer[SAMPLES_HIGH * NUM_AUDIO_CHANNELS * 3];
+#ifdef __PS4__
+        // 2S2H [PS4] The game thread waits for this every frame: log how long it takes and how full
+        // the output queue was, to tell slow synthesis from a starved output.
+        const auto ps4SynthStart = std::chrono::steady_clock::now();
+#endif
         for (int i = 0; i < AUDIO_FRAMES_PER_UPDATE; i++) {
             AudioMgr_CreateNextAudioBuffer(audio_buffer + i * (num_audio_samples * NUM_AUDIO_CHANNELS),
                                            num_audio_samples);
         }
+#ifdef __PS4__
+        {
+            static double sTotalMs = 0.0;
+            static double sMaxMs = 0.0;
+            static int sMinQueued = INT32_MAX;
+            static int sUpdates = 0;
+            const double ms =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ps4SynthStart).count();
+            sTotalMs += ms;
+            sMaxMs = ms > sMaxMs ? ms : sMaxMs;
+            sMinQueued = samples_left < sMinQueued ? samples_left : sMinQueued;
+            if (++sUpdates == 600) {
+                SPDLOG_INFO("[PS4] audio: synthesis {:.2f} ms avg / {:.2f} ms max per update, queue low point {} "
+                            "frames (beyond the cushion)",
+                            sTotalMs / sUpdates, sMaxMs, sMinQueued);
+                sTotalMs = 0.0;
+                sMaxMs = 0.0;
+                sMinQueued = INT32_MAX;
+                sUpdates = 0;
+            }
+        }
+#endif
 
         AudioPlayer_Play((u8*)audio_buffer,
                          num_audio_samples * (sizeof(int16_t) * NUM_AUDIO_CHANNELS * AUDIO_FRAMES_PER_UPDATE));

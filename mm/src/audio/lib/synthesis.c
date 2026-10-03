@@ -1059,6 +1059,12 @@ Acmd* AudioSynth_ProcessSample(s32 noteIndex, NoteSampleState* sampleState, Note
 
                 numFirstFrameSamplesToIgnore = synthState->samplePosInt & 0xF;
                 numSamplesUntilEnd = sampleEndPos - synthState->samplePosInt;
+                // 2S2H [Port] A position past the end of the loop made every count below negative. The
+                // N64's RSP wrapped the resulting DMEM addresses inside its 4 KiB; the mixer here
+                // wrote far outside its buffer instead. Treat it as being at the end.
+                if (numSamplesUntilEnd < 0) {
+                    numSamplesUntilEnd = 0;
+                }
 
                 // Calculate number of samples to process this loop
                 numSamplesToProcess = numSamplesToLoadAdj - numSamplesProcessed;
@@ -1086,6 +1092,9 @@ Acmd* AudioSynth_ProcessSample(s32 noteIndex, NoteSampleState* sampleState, Note
                     numFramesToDecode = (numSamplesToDecode + SAMPLES_PER_FRAME - 1) / SAMPLES_PER_FRAME;
                     if (loopInfo->count != 0) {
                         if ((loopInfo->count == 2) && synthState->stopLoop) {
+                            sampleFinished = true;
+                        } else if (loopInfo->start >= (u32)sampleEndPos) {
+                            // 2S2H [Port] Looping back would land at or past the end again, forever.
                             sampleFinished = true;
                         } else {
                             // Loop around and restart
