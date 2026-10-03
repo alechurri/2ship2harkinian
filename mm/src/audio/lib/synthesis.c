@@ -2,6 +2,9 @@
 #include <libultraship/bridge/resourcebridge.h>
 #include "2s2h/mixer.h"
 #include <libultraship/bridge/consolevariablebridge.h>
+#ifdef __PS4__
+#include <stdio.h>
+#endif
 
 // DMEM Addresses for the RSP
 #define DMEM_TEMP 0x3B0
@@ -1063,6 +1066,24 @@ Acmd* AudioSynth_ProcessSample(s32 noteIndex, NoteSampleState* sampleState, Note
                 // N64's RSP wrapped the resulting DMEM addresses inside its 4 KiB; the mixer here
                 // wrote far outside its buffer instead. Treat it as being at the end.
                 if (numSamplesUntilEnd < 0) {
+#ifdef __PS4__
+                    {
+                        // 2S2H [PS4] Diagnostics: how a note ends up past its own end.
+                        static s32 sPs4PastEndReports = 0;
+                        if (sPs4PastEndReports < 40) {
+                            sPs4PastEndReports++;
+                            printf("[PS4] NOTE PAST END: note %d pos %d end %d (loop start %u end %u count %d, "
+                                   "sampleEnd %u) codec %d size %u medium %d flags %d part %d/%d toLoad %d "
+                                   "startPos %d stopLoop %d atLoop %d freq 0x%X processed %d\n",
+                                   noteIndex, synthState->samplePosInt, sampleEndPos, loopInfo->start,
+                                   loopInfo->loopEnd, (s32)loopInfo->count, loopInfo->sampleEnd, sample->codec,
+                                   sample->size, sample->medium, flags, curPart, numParts, numSamplesToLoadAdj,
+                                   note->playbackState.startSamplePos, synthState->stopLoop,
+                                   synthState->atLoopPoint, sampleState->frequencyFixedPoint, numSamplesProcessed);
+                            fflush(stdout);
+                        }
+                    }
+#endif
                     numSamplesUntilEnd = 0;
                 }
 

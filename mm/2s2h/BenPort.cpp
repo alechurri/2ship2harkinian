@@ -875,6 +875,9 @@ uint32_t OTRGlobals::GetInterpolationFPS() {
 extern "C" void OTRMessage_Init();
 extern "C" void AudioMgr_CreateNextAudioBuffer(s16* samples, u32 num_samples);
 extern "C" void AudioPlayer_Play(const uint8_t* buf, uint32_t len);
+#ifdef __PS4__
+extern "C" void Ps4Audio_TakeStats(uint32_t* droppedBuffers, uint32_t* starvedBlocks);
+#endif
 extern "C" int AudioPlayer_Buffered(void);
 extern "C" int AudioPlayer_GetDesiredBuffered(void);
 extern "C" void ResourceMgr_LoadDirectory(const char* resName);
@@ -936,9 +939,12 @@ void OTRAudio_Thread() {
             sMaxMs = ms > sMaxMs ? ms : sMaxMs;
             sMinQueued = samples_left < sMinQueued ? samples_left : sMinQueued;
             if (++sUpdates == 600) {
+                uint32_t dropped = 0;
+                uint32_t starved = 0;
+                Ps4Audio_TakeStats(&dropped, &starved);
                 SPDLOG_INFO("[PS4] audio: synthesis {:.2f} ms avg / {:.2f} ms max per update, queue low point {} "
-                            "frames (beyond the cushion)",
-                            sTotalMs / sUpdates, sMaxMs, sMinQueued);
+                            "frames (beyond the cushion), {} buffers dropped (queue full), {} output blocks starved",
+                            sTotalMs / sUpdates, sMaxMs, sMinQueued, dropped, starved);
                 sTotalMs = 0.0;
                 sMaxMs = 0.0;
                 sMinQueued = INT32_MAX;
