@@ -61,9 +61,10 @@ void FatalSignalHandler(int signalNumber, siginfo_t* info, void*) {
 }
 
 // Faults don't reach POSIX signal handlers on this system; the kernel's own exception handler
-// API does. It gets a FreeBSD amd64 ucontext. Everything is logged as an offset from the start of
-// the executable's code, which tools/symbolize turns back into functions with the matching ELF.
-constexpr int kMcontextOffset = 16; // after uc_sigmask
+// API does. It gets the PS4 ucontext: a 16 byte signal mask and 48 bytes of padding, then a
+// FreeBSD amd64 mcontext. Everything is logged as an offset from the start of the executable's
+// code, which ps4port/symbolize.py turns back into functions with the matching ELF.
+constexpr int kMcontextOffset = 64;
 constexpr int kRipOffset = kMcontextOffset + 160;
 constexpr int kRspOffset = kMcontextOffset + 184;
 constexpr int kRbpOffset = kMcontextOffset + 72;
@@ -77,12 +78,20 @@ uintptr_t CodeOffset(uintptr_t address) {
     return (address >= start && address < end) ? address - start : 0;
 }
 
+// Highest address of the game thread's stack (approximately: a local of its entry function).
+uintptr_t sGameStackTop = 0;
+
 void LogStackCodeAddresses(const uintptr_t* from, const char* what) {
     char line[160];
     snprintf(line, sizeof(line), "[PS4] code addresses on the %s stack (offsets):", what);
     BootLogRaw(line);
+    // Never read past the top of the game thread's stack: that page isn't mapped.
+    int limit = 1024;
+    if (sGameStackTop > (uintptr_t)from && sGameStackTop - (uintptr_t)from < 0x1000000) {
+        limit = (int)((sGameStackTop - (uintptr_t)from) / sizeof(uintptr_t));
+    }
     int found = 0;
-    for (int i = 0; i < 8192 && found < 48; i++) {
+    for (int i = 0; i < limit && found < 48; i++) {
         const uintptr_t offset = CodeOffset(from[i]);
         if (offset != 0) {
             snprintf(line, sizeof(line), " %lx", (unsigned long)offset);
@@ -113,15 +122,30 @@ void KernelExceptionHandler(int signalNumber, void* context) {
              hangDump ? "HANG" : "FATAL", signalNumber, (void*)rip, (unsigned long)CodeOffset(rip), (void*)addr, (void*)rsp, (void*)rbp,
              (void*)&__text_start);
     BootLogRaw(line);
-    // Only trust rsp if it points near the stack we are running on (same thread), so a wrong
-    // guess about the context layout can't fault again in here.
-    uintptr_t self = (uintptr_t)&rip;
-    const uintptr_t distance = rsp > self ? rsp - self : self - rsp;
-    if (rsp != 0 && (rsp & 7) == 0 && distance < 0x100000) {
+    // Walk the frame pointer chain, staying inside the game thread's stack.
+    const bool onGameStack = sGameStackTop != 0 && rsp != 0 && rsp < sGameStackTop &&
+                             sGameStackTop - rsp < kGameThreadStackSize && (rsp & 7) == 0;
+    if (onGameStack) {
+        BootLogRaw("[PS4] call chain (offsets):");
+        uintptr_t frame = rbp;
+        for (int depth = 0; depth < 64; depth++) {
+            if (frame < rsp || frame + 16 > sGameStackTop || (frame & 7) != 0) {
+                break;
+            }
+            const uintptr_t* slots = reinterpret_cast<const uintptr_t*>(frame);
+            snprintf(line, sizeof(line), " %lx", (unsigned long)CodeOffset(slots[1]));
+            BootLogRaw(line);
+            if (slots[0] <= frame) {
+                break;
+            }
+            frame = slots[0];
+        }
+        BootLogRaw("\n");
         LogStackCodeAddresses(reinterpret_cast<const uintptr_t*>(rsp), "faulting");
+    } else {
+        uintptr_t here = 0;
+        LogStackCodeAddresses(&here, "handler");
     }
-    uintptr_t here = 0;
-    LogStackCodeAddresses(&here, "handler");
     if (hangDump) {
         // Interrupted on purpose by the watchdog: carry on where the thread was.
         BootLogRaw("[PS4] end of hang report\n");
@@ -257,6 +281,8 @@ void CheckFileSizes() {
 }
 
 void* GameThread(void*) {
+    uintptr_t top = 0;
+    sGameStackTop = (uintptr_t)&top + 256;
     BootLogRaw("[PS4] game thread started\n");
     static char arg0[] = "2ship";
     char* argv[] = { arg0, nullptr };
