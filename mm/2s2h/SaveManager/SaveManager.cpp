@@ -138,9 +138,15 @@ int SaveManager_ReadSaveFile(const std::filesystem::path& fileName, nlohmann::js
     }
 
     try {
+#ifdef __PS4__
+        SPDLOG_INFO("[PS4] reading save file {}", filePath.string());
+#endif
         std::ifstream i(filePath);
         i >> j;
         i.close();
+#ifdef __PS4__
+        SPDLOG_INFO("[PS4] save file {} parsed", filePath.string());
+#endif
         return 0;
     } catch (...) {
         SPDLOG_ERROR("Failed to read save file");

@@ -108,7 +108,11 @@ void KernelExceptionHandler(int signalNumber, void* context) {
              signalNumber, (void*)rip, (unsigned long)CodeOffset(rip), (void*)addr, (void*)rsp, (void*)rbp,
              (void*)&__text_start);
     BootLogRaw(line);
-    if (rsp != 0 && (rsp & 7) == 0) {
+    // Only trust rsp if it points near the stack we are running on (same thread), so a wrong
+    // guess about the context layout can't fault again in here.
+    uintptr_t self = (uintptr_t)&rip;
+    const uintptr_t distance = rsp > self ? rsp - self : self - rsp;
+    if (rsp != 0 && (rsp & 7) == 0 && distance < 0x100000) {
         LogStackCodeAddresses(reinterpret_cast<const uintptr_t*>(rsp), "faulting");
     }
     uintptr_t here = 0;
@@ -172,7 +176,9 @@ void InstallBootLog() {
     for (int signalNumber : { SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT }) {
         sigaction(signalNumber, &action, nullptr);
     }
-    for (int signalNumber : { SIGSEGV, SIGBUS, SIGILL, SIGFPE }) {
+    // Kernel (FreeBSD) signal numbers, not the musl/Linux ones from <signal.h>:
+    // SIGILL, SIGTRAP, SIGABRT, SIGFPE, SIGBUS, SIGSEGV, SIGSYS.
+    for (int signalNumber : { 4, 5, 6, 8, 10, 11, 12 }) {
         const int result = sceKernelInstallExceptionHandler(signalNumber, KernelExceptionHandler);
         if (result < 0) {
             char line[96];
