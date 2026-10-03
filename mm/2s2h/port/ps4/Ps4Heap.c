@@ -195,6 +195,14 @@ static int Ps4Heap_Contains(const void* address) {
            (const uint8_t*)address < sArenaBase + sArenaPages * PS4_PAGE_SIZE;
 }
 
+int Ps4Heap_IsInArena(const void* address) {
+    return Ps4Heap_Contains(address);
+}
+
+void* Ps4Heap_GetArenaBase(void) {
+    return sArenaBase;
+}
+
 static void Ps4Heap_Free(void* address, size_t length) {
     const size_t first = (size_t)((uint8_t*)address - sArenaBase) / PS4_PAGE_SIZE;
     size_t pages = (length + PS4_PAGE_SIZE - 1) / PS4_PAGE_SIZE;

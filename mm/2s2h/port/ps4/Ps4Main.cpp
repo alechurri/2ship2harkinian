@@ -18,6 +18,7 @@
 #include <spdlog/spdlog.h>
 #include <ship/port/ps4/Ps4Platform.h>
 
+#include <atomic>
 #include <exception>
 #include <stdexcept>
 #include <string>
@@ -31,6 +32,8 @@ extern "C" int sceKernelRaiseException(pthread_t thread, int signalNumber);
 extern "C" char __text_start;
 extern "C" char __eh_frame_start;
 extern "C" void Ps4Heap_GetStats(size_t* arenaSize, size_t* inUse, size_t* peak);
+extern "C" int Ps4Heap_IsInArena(const void* address);
+extern "C" void* Ps4Heap_GetArenaBase(void);
 
 namespace {
 // Everything the game reads and writes (ROM archives, saves, config, mods, logs) lives here.
@@ -286,11 +289,43 @@ void CheckFileSizes() {
     BootLogRaw(line);
 }
 
+} // namespace
+
+// Called by the audio mixer before every write to RAM (see 2s2h/mixer.c).
+extern "C" int Ps4_IsBadAudioDestination(const void* dest, size_t size, const char* what, void* caller,
+                                         void* callerOfCaller) {
+    const uintptr_t address = (uintptr_t)dest;
+    // Audio buffers live in the heap arena or on a thread stack, both far above 4 GiB; the
+    // executable and its globals sit below.
+    if (address >= 0x100000000ull || Ps4Heap_IsInArena(dest)) {
+        return 0;
+    }
+    static std::atomic<int> sReports{ 0 };
+    if (sReports.fetch_add(1) < 24) {
+        char line[256];
+        snprintf(line, sizeof(line),
+                 "[PS4] BAD AUDIO WRITE: %s to %p (%zu bytes, image offset %lx), called from code offset %lx, "
+                 "called from %lx\n",
+                 what, dest, size, (unsigned long)(address - (uintptr_t)&__text_start),
+                 (unsigned long)CodeOffset((uintptr_t)caller), (unsigned long)CodeOffset((uintptr_t)callerOfCaller));
+        BootLogRaw(line);
+    }
+    return 1;
+}
+
+namespace {
+
 void* GameThread(void*) {
     uintptr_t top = 0;
     // Not past this frame: the page above the top of the stack is not mapped.
     sGameStackTop = (uintptr_t)&top;
     BootLogRaw("[PS4] game thread started\n");
+    {
+        char line[96];
+        snprintf(line, sizeof(line), "[PS4] heap arena at %p, text at %p\n", Ps4Heap_GetArenaBase(),
+                 (void*)&__text_start);
+        BootLogRaw(line);
+    }
     static char arg0[] = "2ship";
     char* argv[] = { arg0, nullptr };
     ship_main(1, argv);

@@ -6,6 +6,18 @@
 #include <stdio.h>
 
 #include "mixer.h"
+
+#ifdef __PS4__
+// 2S2H [PS4] Something in the synthesis saved audio state into the game's own globals on PS4
+// (blocks of saturated samples over the audio and sfx variables). Every write the mixer makes to
+// RAM is checked here: a destination that can't be an audio buffer is reported with the caller and
+// skipped.
+int Ps4_IsBadAudioDestination(const void* dest, size_t size, const char* what, void* caller, void* callerOfCaller);
+#define PS4_BAD_AUDIO_DEST(dest, size, what) \
+    Ps4_IsBadAudioDestination((dest), (size), (what), __builtin_return_address(0), __builtin_return_address(1))
+#else
+#define PS4_BAD_AUDIO_DEST(dest, size, what) 0
+#endif
 #ifndef __clang__
 #pragma GCC optimize("unroll-loops")
 #endif
@@ -133,6 +145,9 @@ void aOPUSFree(struct OggOpusFile* opusFile) {
 }
 
 void aSaveBufferImpl(uint16_t source_addr, int16_t* dest_addr, uint16_t nbytes) {
+    if (PS4_BAD_AUDIO_DEST(dest_addr, ROUND_DOWN_16(nbytes), "aSaveBuffer")) {
+        return;
+    }
     memcpy(dest_addr, BUF_S16(source_addr), ROUND_DOWN_16(nbytes));
 }
 
@@ -182,6 +197,9 @@ void aSetLoopImpl(ADPCM_STATE* adpcm_loop_state) {
 }
 
 void aADPCMdecImpl(uint8_t flags, ADPCM_STATE state) {
+    if (PS4_BAD_AUDIO_DEST(state, 16 * sizeof(int16_t), "aADPCMdec state")) {
+        return;
+    }
     uint8_t* in = BUF_U8(rspa.in);
     int16_t* out = BUF_S16(rspa.out);
     int nbytes = ROUND_UP_32(rspa.nbytes);
@@ -233,6 +251,9 @@ void aADPCMdecImpl(uint8_t flags, ADPCM_STATE state) {
 }
 
 void aResampleImpl(uint8_t flags, uint16_t pitch, RESAMPLE_STATE state) {
+    if (PS4_BAD_AUDIO_DEST(state, 16 * sizeof(int16_t), "aResample state")) {
+        return;
+    }
     int16_t tmp[16];
     int16_t* in_initial = BUF_S16(rspa.in);
     int16_t* in = in_initial;
@@ -367,6 +388,9 @@ void aMixImpl(uint16_t count, int16_t gain, uint16_t in_addr, uint16_t out_addr)
 }
 
 void aS8DecImpl(uint8_t flags, ADPCM_STATE state) {
+    if (PS4_BAD_AUDIO_DEST(state, 16 * sizeof(int16_t), "aS8Dec state")) {
+        return;
+    }
     uint8_t* in = BUF_U8(rspa.in);
     int16_t* out = BUF_S16(rspa.out);
     int nbytes = ROUND_UP_32(rspa.nbytes);
@@ -514,6 +538,9 @@ void aFilterImpl(uint8_t flags, uint16_t count_or_buf, int16_t* state_or_filter)
         int16_t tmp[16], tmp2[8];
         int count = rspa.filter_count;
         int16_t* buf = BUF_S16(count_or_buf);
+        if (PS4_BAD_AUDIO_DEST(state_or_filter, 16 * sizeof(int16_t), "aFilter state")) {
+            return;
+        }
 
         if (flags == A_INIT) {
 #ifndef __clang__
