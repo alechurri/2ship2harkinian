@@ -76,6 +76,6 @@ class AudioSoundFont : public Ship::Resource<SoundFont> {
 
     std::vector<SoundFontSound> soundEffects;
 
-    SoundFont soundFont;
+    SoundFont soundFont{};
 };
 }; // namespace SOH

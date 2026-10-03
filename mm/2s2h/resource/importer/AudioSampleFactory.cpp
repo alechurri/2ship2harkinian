@@ -190,6 +190,40 @@ static void OggDecoderWorker(std::shared_ptr<SOH::AudioSample> audioSample, std:
     }
 }
 
+// 2S2H [Port] Majora's Mask keeps the total number of samples of the clip at offset 0x0C of the loop
+// (`sampleEnd`, read by the synthesis for loops with a count of 2, once the note is released). The
+// archive doesn't carry it, so it used to be whatever was left in memory: on PS4 that meant notes
+// "playing" far past the end of their data and the mixer writing outside its DMEM buffer.
+// Rebuild it from the sample data instead.
+static void SetSampleEnd(SOH::AudioSample* audioSample, bool fromSampleData) {
+    uint32_t end = audioSample->loop.end;
+
+    if (fromSampleData) {
+        const uint32_t size = audioSample->sample.size;
+        switch (audioSample->sample.codec) {
+            case CODEC_ADPCM: // 9 bytes per 16 samples
+                end = (size / 9) * 16;
+                break;
+            case CODEC_SMALL_ADPCM: // 5 bytes per 16 samples
+                end = (size / 5) * 16;
+                break;
+            case CODEC_S8:
+                end = size;
+                break;
+            case CODEC_S16:
+            case CODEC_S16_INMEMORY:
+                end = size / 2;
+                break;
+            default:
+                break;
+        }
+        if (end < audioSample->loop.end) {
+            end = audioSample->loop.end;
+        }
+    }
+    memcpy(audioSample->loop.unk_0C, &end, sizeof(end));
+}
+
 namespace SOH {
 std::shared_ptr<Ship::IResource>
 ResourceFactoryBinaryAudioSampleV2::ReadResource(std::shared_ptr<Ship::File> file,
@@ -236,6 +270,7 @@ ResourceFactoryBinaryAudioSampleV2::ReadResource(std::shared_ptr<Ship::File> fil
         audioSample->book.book[i] = reader->ReadInt16();
     }
     audioSample->sample.book = &audioSample->book;
+    SetSampleEnd(audioSample.get(), true);
 
     return audioSample;
 }
@@ -309,16 +344,20 @@ ResourceFactoryXMLAudioSampleV0::ReadResource(std::shared_ptr<Ship::File> file,
             audioSample->sample.sampleAddr = new uint8_t[numFrames * wav.channels * 2];
 
             drwav_read_pcm_frames_s16(&wav, numFrames, (int16_t*)audioSample->sample.sampleAddr);
+            SetSampleEnd(audioSample.get(), false);
             return audioSample;
         } else if (strcmp(customFormatStr, "mp3") == 0) {
+            SetSampleEnd(audioSample.get(), false);
             std::thread fileDecoderThread = std::thread(Mp3DecoderWorker, audioSample, sampleFile);
             fileDecoderThread.detach();
             return audioSample;
         } else if (strcmp(customFormatStr, "ogg") == 0) {
+            SetSampleEnd(audioSample.get(), false);
             std::thread fileDecoderThread = std::thread(OggDecoderWorker, audioSample, sampleFile, initData);
             fileDecoderThread.detach();
             return audioSample;
         } else if (strcmp(customFormatStr, "flac") == 0) {
+            SetSampleEnd(audioSample.get(), false);
             std::thread fileDecoderThread = std::thread(FlacDecoderWorker, audioSample, sampleFile);
             fileDecoderThread.detach();
             return audioSample;
@@ -330,6 +369,7 @@ ResourceFactoryXMLAudioSampleV0::ReadResource(std::shared_ptr<Ship::File> file,
     for (uint32_t i = 0; i < size; i++) {
         audioSample->sample.sampleAddr[i] = sampleFile->Buffer.get()->data()[i];
     }
+    SetSampleEnd(audioSample.get(), true);
 
     return audioSample;
 }

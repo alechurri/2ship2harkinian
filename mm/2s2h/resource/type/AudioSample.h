@@ -9,7 +9,7 @@ typedef struct {
     /* 0x00 */ u32 start;
     /* 0x04 */ u32 end;
     /* 0x08 */ u32 count;
-    /* 0x0C */ char unk_0C[0x4];
+    /* 0x0C */ char unk_0C[0x4]; // sampleEnd in Majora's Mask, see SetSampleEnd in AudioSampleFactory.cpp
     /* 0x10 */ s16 state[16]; // only exists if count != 0. 8-byte aligned
 } AdpcmLoop;                  // size = 0x30 (or 0x10)
 
@@ -51,9 +51,10 @@ class AudioSample : public Ship::Resource<Sample> {
     Sample* GetPointer();
     size_t GetPointerSize();
 
-    Sample sample;
-    AdpcmLoop loop;
-    AdpcmBook book;
+    // Value-initialized: the factories don't fill every field, and the audio engine reads them all.
+    Sample sample{};
+    AdpcmLoop loop{};
+    AdpcmBook book{};
     // Only applies to streamed audio
     float tuning = -1.0f;
 };
