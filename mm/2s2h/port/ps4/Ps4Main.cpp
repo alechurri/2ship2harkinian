@@ -17,7 +17,17 @@
 
 #include <spdlog/spdlog.h>
 
+#include <exception>
+#include <stdexcept>
+#include <string>
+
 extern "C" int ship_main(int argc, char* argv[]);
+// Not declared by the OpenOrbis headers.
+extern "C" int sceKernelInstallExceptionHandler(int signalNumber, void (*handler)(int, void*));
+extern "C" int sceKernelRemoveExceptionHandler(int signalNumber);
+// From the OpenOrbis linker script.
+extern "C" char __text_start;
+extern "C" char __eh_frame_start;
 extern "C" void Ps4Heap_GetStats(size_t* arenaSize, size_t* inUse, size_t* peak);
 
 namespace {
@@ -48,6 +58,99 @@ void FatalSignalHandler(int signalNumber, siginfo_t* info, void*) {
     raise(signalNumber);
 }
 
+// Faults don't reach POSIX signal handlers on this system; the kernel's own exception handler
+// API does. It gets a FreeBSD amd64 ucontext. Everything is logged as an offset from the start of
+// the executable's code, which tools/symbolize turns back into functions with the matching ELF.
+constexpr int kMcontextOffset = 16; // after uc_sigmask
+constexpr int kRipOffset = kMcontextOffset + 160;
+constexpr int kRspOffset = kMcontextOffset + 184;
+constexpr int kRbpOffset = kMcontextOffset + 72;
+constexpr int kAddrOffset = kMcontextOffset + 136;
+
+uintptr_t CodeOffset(uintptr_t address) {
+    const uintptr_t start = (uintptr_t)&__text_start;
+    const uintptr_t end = (uintptr_t)&__eh_frame_start;
+    return (address >= start && address < end) ? address - start : 0;
+}
+
+void LogStackCodeAddresses(const uintptr_t* from, const char* what) {
+    char line[160];
+    snprintf(line, sizeof(line), "[PS4] code addresses on the %s stack (offsets):", what);
+    BootLogRaw(line);
+    int found = 0;
+    for (int i = 0; i < 8192 && found < 48; i++) {
+        const uintptr_t offset = CodeOffset(from[i]);
+        if (offset != 0) {
+            snprintf(line, sizeof(line), " %lx", (unsigned long)offset);
+            BootLogRaw(line);
+            found++;
+        }
+    }
+    BootLogRaw("\n");
+}
+
+void KernelExceptionHandler(int signalNumber, void* context) {
+    char line[256];
+    const uint8_t* ctx = static_cast<const uint8_t*>(context);
+    uintptr_t rip = 0;
+    uintptr_t rsp = 0;
+    uintptr_t rbp = 0;
+    uintptr_t addr = 0;
+    if (ctx != nullptr) {
+        memcpy(&rip, ctx + kRipOffset, sizeof(rip));
+        memcpy(&rsp, ctx + kRspOffset, sizeof(rsp));
+        memcpy(&rbp, ctx + kRbpOffset, sizeof(rbp));
+        memcpy(&addr, ctx + kAddrOffset, sizeof(addr));
+    }
+    snprintf(line, sizeof(line),
+             "[PS4] FATAL: exception %d at rip %p (code offset %lx), fault address %p, rsp %p, rbp %p, text "
+             "start %p\n",
+             signalNumber, (void*)rip, (unsigned long)CodeOffset(rip), (void*)addr, (void*)rsp, (void*)rbp,
+             (void*)&__text_start);
+    BootLogRaw(line);
+    if (rsp != 0 && (rsp & 7) == 0) {
+        LogStackCodeAddresses(reinterpret_cast<const uintptr_t*>(rsp), "faulting");
+    }
+    uintptr_t here = 0;
+    LogStackCodeAddresses(&here, "handler");
+    BootLogRaw("[PS4] end of crash report\n");
+    // Let the fault happen again without us, so the system ends the process as usual.
+    sceKernelRemoveExceptionHandler(signalNumber);
+}
+
+void TerminateHandler() {
+    char line[512];
+    const char* what = "unknown";
+    std::string message;
+    if (std::exception_ptr current = std::current_exception()) {
+        try {
+            std::rethrow_exception(current);
+        } catch (const std::exception& e) {
+            message = e.what();
+            what = message.c_str();
+        } catch (...) {
+        }
+    } else {
+        what = "std::terminate called without an active exception";
+    }
+    snprintf(line, sizeof(line), "[PS4] FATAL: uncaught C++ exception: %s\n", what);
+    BootLogRaw(line);
+    uintptr_t here = 0;
+    LogStackCodeAddresses(&here, "terminate");
+    abort();
+}
+
+// Exceptions go through libunwind's bare-metal mode here; check once that they actually work.
+void CheckExceptions() {
+    bool caught = false;
+    try {
+        throw std::runtime_error("self test");
+    } catch (const std::exception& e) {
+        caught = strcmp(e.what(), "self test") == 0;
+    }
+    BootLogRaw(caught ? "[PS4] C++ exceptions: ok\n" : "[PS4] C++ exceptions: BROKEN\n");
+}
+
 void InstallBootLog() {
     sBootLogFd = open(kBootLog, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (sBootLogFd >= 0) {
@@ -69,6 +172,16 @@ void InstallBootLog() {
     for (int signalNumber : { SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT }) {
         sigaction(signalNumber, &action, nullptr);
     }
+    for (int signalNumber : { SIGSEGV, SIGBUS, SIGILL, SIGFPE }) {
+        const int result = sceKernelInstallExceptionHandler(signalNumber, KernelExceptionHandler);
+        if (result < 0) {
+            char line[96];
+            snprintf(line, sizeof(line), "[PS4] sceKernelInstallExceptionHandler(%d) failed: 0x%08X\n", signalNumber,
+                     (unsigned int)result);
+            BootLogRaw(line);
+        }
+    }
+    std::set_terminate(TerminateHandler);
 }
 
 // stat() used to report garbage sizes with the stock OpenOrbis headers (see ps4_fixups.h in the
@@ -125,6 +238,7 @@ int main(int argc, char* argv[]) {
     InstallBootLog();
     BootLogRaw("[PS4] 2 Ship 2 Harkinian boot\n");
     CheckFileSizes();
+    CheckExceptions();
 
     atexit(ReturnToSystem);
 
