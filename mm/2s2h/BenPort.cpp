@@ -923,13 +923,17 @@ void OTRAudio_Thread() {
         // 2S2H [PS4] Audio is made once per game frame, so a game running a little under full speed
         // made less audio than the output plays and the queue ran dry (silent gaps). The N64 ran
         // its audio on its own clock: follow the queue instead.
-        if (samples_left < AudioPlayer_GetDesiredBuffered()) {
-            // As many extra updates as it takes to get back to the desired level (at most 6 in all).
+        // The game thread waits for this every frame, so extra updates cost frame time: one when
+        // the queue is below the desired level, as many as needed (at most 6 in all) only when it
+        // is nearly empty.
+        if (samples_left < AudioPlayer_GetDesiredBuffered() / 4) {
             audio_updates += (AudioPlayer_GetDesiredBuffered() - samples_left + (int)num_audio_samples - 1) /
                              (int)num_audio_samples;
             if (audio_updates > 6) {
                 audio_updates = 6;
             }
+        } else if (samples_left < AudioPlayer_GetDesiredBuffered()) {
+            audio_updates++;
         } else if (samples_left > AudioPlayer_GetDesiredBuffered() * 3 && audio_updates > 1) {
             audio_updates--;
         }
@@ -1376,7 +1380,19 @@ extern "C" void Graph_ProcessGfxCommands(Gfx* commands) {
         count = 1;
     }
 
+#ifdef __PS4__
+    // 2S2H [PS4] Frame time breakdown: game logic (since the previous call), drawing and presenting
+    // (RunCommands, including frame pacing) and waiting for the audio thread.
+    using Ps4Clock = std::chrono::steady_clock;
+    static Ps4Clock::time_point sPs4LastEnd = Ps4Clock::now();
+    static double sPs4Logic = 0, sPs4LogicMax = 0, sPs4Draw = 0, sPs4DrawMax = 0, sPs4Wait = 0, sPs4WaitMax = 0;
+    static int sPs4Frames = 0;
+    const Ps4Clock::time_point ps4DrawStart = Ps4Clock::now();
+#endif
     RunCommands(commands, start_time, step, next_original_frame, count);
+#ifdef __PS4__
+    const Ps4Clock::time_point ps4DrawEnd = Ps4Clock::now();
+#endif
 
     last_fps = fps;
     last_update_rate = R_UPDATE_RATE;
@@ -1387,6 +1403,29 @@ extern "C" void Graph_ProcessGfxCommands(Gfx* commands) {
             audio.cv_from_thread.wait(Lock);
         }
     }
+#ifdef __PS4__
+    {
+        const Ps4Clock::time_point now = Ps4Clock::now();
+        const double logic = std::chrono::duration<double, std::milli>(ps4DrawStart - sPs4LastEnd).count();
+        const double draw = std::chrono::duration<double, std::milli>(ps4DrawEnd - ps4DrawStart).count();
+        const double wait = std::chrono::duration<double, std::milli>(now - ps4DrawEnd).count();
+        sPs4LastEnd = now;
+        sPs4Logic += logic;
+        sPs4Draw += draw;
+        sPs4Wait += wait;
+        sPs4LogicMax = logic > sPs4LogicMax ? logic : sPs4LogicMax;
+        sPs4DrawMax = draw > sPs4DrawMax ? draw : sPs4DrawMax;
+        sPs4WaitMax = wait > sPs4WaitMax ? wait : sPs4WaitMax;
+        if (++sPs4Frames == 600) {
+            SPDLOG_INFO("[PS4] frame time (avg/max ms per game frame, {} presented each): logic {:.1f}/{:.1f}, "
+                        "draw+present {:.1f}/{:.1f}, audio wait {:.1f}/{:.1f}",
+                        count, sPs4Logic / sPs4Frames, sPs4LogicMax, sPs4Draw / sPs4Frames, sPs4DrawMax,
+                        sPs4Wait / sPs4Frames, sPs4WaitMax);
+            sPs4Logic = sPs4LogicMax = sPs4Draw = sPs4DrawMax = sPs4Wait = sPs4WaitMax = 0;
+            sPs4Frames = 0;
+        }
+    }
+#endif
 
     bool curAltAssets = CVarGetInteger("gEnhancements.Mods.AlternateAssets", 0);
     if (prevAltAssets != curAltAssets) {
