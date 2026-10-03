@@ -30,8 +30,18 @@ int Ps4_IsBadAudioDestination(const void* dest, size_t size, const char* what, v
 
 //#define DMEM_BUF_SIZE (0x1000 - 0x0330 - 0x10 - 0x40)
 #define DMEM_BUF_SIZE 0xC80
+#ifdef __PS4__
+// 2S2H [PS4] DMEM addresses are 16 bit, so an out of range one used to reach up to 64 KiB past
+// the emulated DMEM buffer and overwrite whatever globals follow it (on PS4: the audio state and
+// the sfx lists). Out of range accesses go to a scratch area instead, and the first ones are logged
+// with the mixer function and its caller.
+static uint8_t* Ps4DmemPtr(uint32_t addr, const char* function, void* caller, void* callerOfCaller);
+#define BUF_U8(a) Ps4DmemPtr((a), __func__, __builtin_return_address(0), __builtin_return_address(1))
+#define BUF_S16(a) ((int16_t*)BUF_U8((uint32_t)(a) & ~1u))
+#else
 #define BUF_U8(a) (rspa.buf.as_u8 + ((a)-0x0330))
 #define BUF_S16(a) (rspa.buf.as_s16 + ((a)-0x0330) / sizeof(int16_t))
+#endif
 
 static struct {
     uint16_t in;
@@ -54,7 +64,39 @@ static struct {
         int16_t as_s16[DMEM_BUF_SIZE / sizeof(int16_t)];
         uint8_t as_u8[DMEM_BUF_SIZE];
     } buf;
+#ifdef __PS4__
+    uint64_t ps4Canary[8]; // must stay zero: detects writes running past the end of buf
+#endif
 } rspa;
+
+#ifdef __PS4__
+extern char __text_start;
+static uint8_t sPs4DmemScratch[0x10000 + 0x400] __attribute__((aligned(16)));
+static int sPs4DmemReports = 0;
+
+static uint8_t* Ps4DmemPtr(uint32_t addr, const char* function, void* caller, void* callerOfCaller) {
+    if ((rspa.ps4Canary[0] | rspa.ps4Canary[7]) != 0) {
+        if (sPs4DmemReports < 32) {
+            sPs4DmemReports++;
+            printf("[PS4] DMEM OVERRUN past the end of the buffer, noticed in %s (called from code offset %lx)\n",
+                   function, (unsigned long)((uintptr_t)caller - (uintptr_t)&__text_start));
+            fflush(stdout);
+        }
+        memset(rspa.ps4Canary, 0, sizeof(rspa.ps4Canary));
+    }
+    if (addr >= 0x0330 && addr < 0x0330 + DMEM_BUF_SIZE) {
+        return rspa.buf.as_u8 + (addr - 0x0330);
+    }
+    if (sPs4DmemReports < 32) {
+        sPs4DmemReports++;
+        printf("[PS4] DMEM OUT OF RANGE: %s used DMEM address 0x%X, called from code offset %lx, called from %lx\n",
+               function, addr, (unsigned long)((uintptr_t)caller - (uintptr_t)&__text_start),
+               (unsigned long)((uintptr_t)callerOfCaller - (uintptr_t)&__text_start));
+        fflush(stdout);
+    }
+    return sPs4DmemScratch;
+}
+#endif
 
 static int16_t resample_table[64][4] = {
     { 0x0c39, 0x66ad, 0x0d46, 0xffdf }, { 0x0b39, 0x6696, 0x0e5f, 0xffd8 }, { 0x0a44, 0x6669, 0x0f83, 0xffd0 },
